@@ -40,6 +40,8 @@
 #define ID_CARD_SHARE 201
 #define ID_CARD_AVAILABILITY 202
 #define ID_CARD_BEST 203
+#define ID_CARD_EVENTS 204
+#define ID_CARD_SETTINGS 205
 #define ID_CREATE_EVENT 300
 #define ID_ADD_DATE 301
 #define ID_REFRESH 302
@@ -80,6 +82,9 @@ typedef struct {
 typedef struct {
 	wchar_t directory[MAX_PATH];
 	wchar_t display_name[MAX_EVENT_NAME + 32];
+	int duration_minutes;
+	int expected_responses;
+	int date_count;
 } SavedEvent;
 
 typedef struct {
@@ -670,13 +675,13 @@ static void CreateDateRowControls(AppState *app, int index)
 	DateControls *row = &app->date_controls[index];
 	wchar_t label[32];
 	row->date = CreateEdit(app, PAGE_CREATE, L"", 500 + index * 4, 0);
-	row->start = CreateEdit(app, PAGE_CREATE, L"09:00", 501 + index * 4, 0);
-	row->end = CreateEdit(app, PAGE_CREATE, L"17:00", 502 + index * 4, 0);
+	row->start = CreateEdit(app, PAGE_CREATE, L"09:00 AM", 501 + index * 4, 0);
+	row->end = CreateEdit(app, PAGE_CREATE, L"05:00 PM", 502 + index * 4, 0);
 	_snwprintf_s(label, 32, _TRUNCATE, L"Remove");
 	row->remove = CreateButton(app, PAGE_CREATE, label, ID_REMOVE_DATE_BASE + index);
 	if (row->date) SendMessageW(row->date, EM_SETLIMITTEXT, MAX_DATE_LABEL - 1, 0);
-	if (row->start) SendMessageW(row->start, EM_SETLIMITTEXT, 5, 0);
-	if (row->end) SendMessageW(row->end, EM_SETLIMITTEXT, 5, 0);
+	if (row->start) SendMessageW(row->start, EM_SETLIMITTEXT, 8, 0);
+	if (row->end) SendMessageW(row->end, EM_SETLIMITTEXT, 8, 0);
 }
 
 static void CreateControls(AppState *app)
@@ -684,13 +689,13 @@ static void CreateControls(AppState *app)
 	int index;
 	app->font = CreateFontW(-MulDiv(9, app->dpi ? app->dpi : 96, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
 		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-		DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+		DEFAULT_PITCH | FF_SWISS, L"Arial Rounded MT Bold");
 	app->font_bold = CreateFontW(-MulDiv(9, app->dpi ? app->dpi : 96, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
 		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-		DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+		DEFAULT_PITCH | FF_SWISS, L"Arial Rounded MT Bold");
 	app->font_title = CreateFontW(-MulDiv(20, app->dpi ? app->dpi : 96, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
 		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-		DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+		DEFAULT_PITCH | FF_SWISS, L"Arial Rounded MT Bold");
 
 	HWND header = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
 		0, 0, 10, 10, app->window, (HMENU)ID_HEADER, GetModuleHandleW(NULL), NULL);
@@ -777,7 +782,7 @@ static void CreateControls(AppState *app)
 	SendMessageW(app->create_expected, EM_SETLIMITTEXT, 2, 0);
 	CreateLabel(app, PAGE_CREATE, L"Possible dates and time ranges", 709, 0);
 	CreateLabel(app, PAGE_CREATE,
-		L"Use YYYY-MM-DD dates and 24-hour times on 30-minute boundaries. Time zone is a label only.", 710, 0);
+		L"Use YYYY-MM-DD dates and 12-hour times (for example, 9:00 AM) on 30-minute boundaries. Use an IANA time zone such as America/New_York.", 710, 0);
 	CreateLabel(app, PAGE_CREATE, L"Date", 712, 0);
 	CreateLabel(app, PAGE_CREATE, L"Start", 713, 0);
 	CreateLabel(app, PAGE_CREATE, L"End", 714, 0);
@@ -797,12 +802,15 @@ static void CreateControls(AppState *app)
 
 	CreateLabel(app, PAGE_EVENTS, L"My Events", 800, 0);
 	CreateLabel(app, PAGE_EVENTS, L"Saved on this computer. Select an event to view its details and results.", 801, 0);
+	CreateCard(app, PAGE_EVENTS, ID_CARD_EVENTS);
 	app->event_list = CreatePageControl(app, PAGE_EVENTS, WS_EX_CLIENTEDGE,
-		L"LISTBOX", L"", LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP, ID_EVENT_LIST);
+		L"LISTBOX", L"", LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED |
+		LBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, ID_EVENT_LIST);
 	SendMessageW(app->event_list, WM_SETFONT, (WPARAM)app->font, TRUE);
 	app->events_hint = CreateLabel(app, PAGE_EVENTS, L"", 802, 0);
 
 	CreateLabel(app, PAGE_SETTINGS, L"Settings", 900, 0);
+	CreateCard(app, PAGE_SETTINGS, ID_CARD_SETTINGS);
 	CreateLabel(app, PAGE_SETTINGS, L"Apps Script deployment URL", 901, 0);
 	app->settings_endpoint = CreateEdit(app, PAGE_SETTINGS, L"", 902, 0);
 	SendMessageW(app->settings_endpoint, EM_SETLIMITTEXT, 900, 0);
@@ -1090,18 +1098,26 @@ static void LayoutApp(AppState *app)
 
 	Place(app, GetDlgItem(app->window, 800), 250, 98, 400, 36);
 	Place(app, GetDlgItem(app->window, 801), 250, 140, width - 300, 28);
-	Place(app, app->event_list, 250, 184, width - 300, height - 250);
-	Place(app, app->events_hint, 250, height - 54, width - 300, 26);
+	Place(app, GetDlgItem(app->window, ID_CARD_EVENTS), 234, 176, width - 280, height - 208);
+	Place(app, app->event_list, 250, 190, width - 312, height - 282);
+	Place(app, app->events_hint, 250, height - 82, width - 312, 26);
 
-	Place(app, GetDlgItem(app->window, 900), 250, 98, 400, 36);
-	Place(app, GetDlgItem(app->window, 901), 250, 164, 500, 24);
-	Place(app, app->settings_endpoint, 250, 192, 700, 34);
-	Place(app, GetDlgItem(app->window, 903), 250, 250, 300, 24);
-	Place(app, app->settings_key, 250, 278, 700, 34);
-	Place(app, GetDlgItem(app->window, 905), 250, 326, width - 320, 48);
-	Place(app, app->save_settings_button, 250, 394, 150, 38);
-	Place(app, app->test_connection_button, 418, 394, 170, 38);
-	Place(app, app->settings_status, 250, 450, width - 320, 32);
+	{
+		int settings_width = width - 320;
+		if (settings_width > 700) settings_width = 700;
+		if (settings_width < 360) settings_width = 360;
+		Place(app, GetDlgItem(app->window, 900), 250, 98, 400, 36);
+		Place(app, GetDlgItem(app->window, ID_CARD_SETTINGS), 234, 154,
+			settings_width + 48, 360);
+		Place(app, GetDlgItem(app->window, 901), 260, 178, settings_width, 24);
+		Place(app, app->settings_endpoint, 260, 204, settings_width, 36);
+		Place(app, GetDlgItem(app->window, 903), 260, 264, settings_width, 24);
+		Place(app, app->settings_key, 260, 290, settings_width, 36);
+		Place(app, GetDlgItem(app->window, 905), 260, 344, settings_width, 48);
+		Place(app, app->save_settings_button, 260, 414, 150, 38);
+		Place(app, app->test_connection_button, 426, 414, 170, 38);
+		Place(app, app->settings_status, 260, 464, settings_width, 32);
+	}
 }
 
 static void DrawRoundRect(HDC dc, const RECT *rectangle, COLORREF fill,
@@ -1198,19 +1214,32 @@ static int ReadIntControl(HWND control, int minimum, int maximum, int *value)
 
 static int ParseTimeText(const wchar_t *text, int allow_midnight_end, int *minutes)
 {
+	size_t length = wcslen(text);
+	size_t hour_digits;
 	int hour;
 	int minute;
-	if (wcslen(text) != 5 || text[2] != L':' ||
-	    !iswdigit(text[0]) || !iswdigit(text[1]) ||
-	    !iswdigit(text[3]) || !iswdigit(text[4])) return 0;
-	hour = (text[0] - L'0') * 10 + text[1] - L'0';
-	minute = (text[3] - L'0') * 10 + text[4] - L'0';
+	int is_pm;
+	if ((length != 7 && length != 8) || text[length - 3] != L' ' ||
+	    towupper(text[length - 1]) != L'M' ||
+	    (towupper(text[length - 2]) != L'A' &&
+	     towupper(text[length - 2]) != L'P')) return 0;
+	is_pm = towupper(text[length - 2]) == L'P';
+	hour_digits = length - 6;
+	if (text[hour_digits] != L':' || !iswdigit(text[hour_digits + 1]) ||
+	    !iswdigit(text[hour_digits + 2]) ||
+	    (hour_digits == 2 && !iswdigit(text[0])) ||
+	    (hour_digits != 1 && hour_digits != 2)) return 0;
+	hour = hour_digits == 2 ? (text[0] - L'0') * 10 + text[1] - L'0' :
+		text[0] - L'0';
+	minute = (text[hour_digits + 1] - L'0') * 10 + text[hour_digits + 2] - L'0';
 	if (minute != 0 && minute != 30) return 0;
-	if (allow_midnight_end && hour == 24 && minute == 0) {
+	if (hour < 1 || hour > 12) return 0;
+	if (allow_midnight_end && !is_pm && hour == 12 && minute == 0) {
 		*minutes = 1440;
 		return 1;
 	}
-	if (hour < 0 || hour > 23) return 0;
+	hour %= 12;
+	if (is_pm) hour += 12;
 	*minutes = hour * 60 + minute;
 	return 1;
 }
@@ -1432,12 +1461,32 @@ static int GetControlTextUtf8(HWND control, char *output, size_t capacity)
 static void DefaultTimeZone(wchar_t *output, size_t capacity)
 {
 	DYNAMIC_TIME_ZONE_INFORMATION time_zone;
-	if (GetDynamicTimeZoneInformation(&time_zone) != TIME_ZONE_ID_INVALID &&
-	    time_zone.StandardName[0]) {
-		CopyWide(output, capacity, time_zone.StandardName);
-	} else {
-		CopyWide(output, capacity, L"Organizer time zone");
+	const wchar_t *iana = NULL;
+	if (GetDynamicTimeZoneInformation(&time_zone) != TIME_ZONE_ID_INVALID) {
+		if (wcscmp(time_zone.TimeZoneKeyName, L"Eastern Standard Time") == 0)
+			iana = L"America/New_York";
+		else if (wcscmp(time_zone.TimeZoneKeyName, L"Central Standard Time") == 0)
+			iana = L"America/Chicago";
+		else if (wcscmp(time_zone.TimeZoneKeyName, L"Mountain Standard Time") == 0)
+			iana = L"America/Denver";
+		else if (wcscmp(time_zone.TimeZoneKeyName, L"Pacific Standard Time") == 0)
+			iana = L"America/Los_Angeles";
+		else if (wcscmp(time_zone.TimeZoneKeyName, L"Alaskan Standard Time") == 0)
+			iana = L"America/Anchorage";
+		else if (wcscmp(time_zone.TimeZoneKeyName, L"Hawaiian Standard Time") == 0)
+			iana = L"Pacific/Honolulu";
+		else if (wcscmp(time_zone.TimeZoneKeyName, L"GMT Standard Time") == 0)
+			iana = L"Europe/London";
+		else if (wcscmp(time_zone.TimeZoneKeyName, L"Romance Standard Time") == 0)
+			iana = L"Europe/Paris";
+		else if (wcscmp(time_zone.TimeZoneKeyName, L"India Standard Time") == 0)
+			iana = L"Asia/Kolkata";
+		else if (wcscmp(time_zone.TimeZoneKeyName, L"Tokyo Standard Time") == 0)
+			iana = L"Asia/Tokyo";
+		else if (wcscmp(time_zone.TimeZoneKeyName, L"AUS Eastern Standard Time") == 0)
+			iana = L"Australia/Sydney";
 	}
+	CopyWide(output, capacity, iana ? iana : L"");
 }
 
 static int PrepareEvent(AppState *app, GroupEvent *event)
@@ -1467,7 +1516,8 @@ static int PrepareEvent(AppState *app, GroupEvent *event)
 	}
 	if (!GetControlTextUtf8(app->create_timezone, event->time_zone, sizeof(event->time_zone)) ||
 	    event->time_zone[0] == '\0') {
-		MessageBoxW(app->window, L"Enter the organizer's time-zone label.",
+		MessageBoxW(app->window,
+			L"Enter the organizer's IANA time zone, such as America/New_York.",
 			L"GroupSync", MB_OK | MB_ICONWARNING);
 		SetFocus(app->create_timezone);
 		return 0;
@@ -1486,7 +1536,7 @@ static int PrepareEvent(AppState *app, GroupEvent *event)
 		if (!ParseDateText(date_text) || !ParseTimeText(start_text, 0, &start_minutes) ||
 		    !ParseTimeText(end_text, 1, &end_minutes) || end_minutes <= start_minutes) {
 			_snwprintf_s(text, _countof(text), _TRUNCATE,
-				L"Check date %d. Use YYYY-MM-DD and 24-hour HH:MM times on 30-minute boundaries.",
+				L"Check date %d. Use YYYY-MM-DD and 12-hour times such as 9:00 AM on 30-minute boundaries.",
 				index + 1);
 			MessageBoxW(app->window, text, L"GroupSync", MB_OK | MB_ICONWARNING);
 			SetFocus(app->date_controls[index].date);
@@ -1661,6 +1711,9 @@ static void RefreshEventList(AppState *app)
 		Utf8ToWide(event.event_name,
 			app->saved_events[app->saved_event_count].display_name,
 			_countof(app->saved_events[app->saved_event_count].display_name));
+		app->saved_events[app->saved_event_count].duration_minutes = event.duration_minutes;
+		app->saved_events[app->saved_event_count].expected_responses = event.expected_responses;
+		app->saved_events[app->saved_event_count].date_count = event.date_count;
 		row = (int)SendMessageW(app->event_list, LB_ADDSTRING, 0,
 			(LPARAM)app->saved_events[app->saved_event_count].display_name);
 		SendMessageW(app->event_list, LB_SETITEMDATA, row,
@@ -1838,8 +1891,8 @@ static void RemoveDateRow(AppState *app, int index)
 	}
 	--app->date_row_count;
 	SetWindowTextW(app->date_controls[app->date_row_count].date, L"");
-	SetWindowTextW(app->date_controls[app->date_row_count].start, L"09:00");
-	SetWindowTextW(app->date_controls[app->date_row_count].end, L"17:00");
+	SetWindowTextW(app->date_controls[app->date_row_count].start, L"09:00 AM");
+	SetWindowTextW(app->date_controls[app->date_row_count].end, L"05:00 PM");
 	LayoutApp(app);
 }
 
@@ -2086,13 +2139,13 @@ static void RebuildFonts(AppState *app)
 	HFONT old_title = app->font_title;
 	app->font = CreateFontW(-MulDiv(9, app->dpi ? app->dpi : 96, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
 		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-		DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+		DEFAULT_PITCH | FF_SWISS, L"Arial Rounded MT Bold");
 	app->font_bold = CreateFontW(-MulDiv(9, app->dpi ? app->dpi : 96, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
 		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-		DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+		DEFAULT_PITCH | FF_SWISS, L"Arial Rounded MT Bold");
 	app->font_title = CreateFontW(-MulDiv(20, app->dpi ? app->dpi : 96, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
 		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-		DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+		DEFAULT_PITCH | FF_SWISS, L"Arial Rounded MT Bold");
 	UpdateFontsForControlTree(app);
 	SetControlFont(app->connection_label, app->font_bold);
 	if (old_font) DeleteObject(old_font);
@@ -2339,8 +2392,59 @@ static LRESULT CALLBACK MainProc(HWND window, UINT message,
 		LayoutAfterPageChange(app);
 		return 0;
 	}
+	case WM_MEASUREITEM: {
+		MEASUREITEMSTRUCT *measure = (MEASUREITEMSTRUCT *)lparam;
+		if (measure->CtlID == ID_EVENT_LIST) {
+			measure->itemHeight = (UINT)Scale(app, 76);
+			return TRUE;
+		}
+		break;
+	}
 	case WM_DRAWITEM: {
 		DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lparam;
+		if (item->CtlType == ODT_LISTBOX && item->CtlID == ID_EVENT_LIST) {
+			RECT rect = item->rcItem;
+			RECT text_rect = rect;
+			RECT divider = rect;
+			COLORREF fill = (item->itemState & ODS_SELECTED) ?
+				GS_COLOR_PRIMARY_BG : GS_COLOR_SURFACE;
+			HBRUSH background = CreateSolidBrush(fill);
+			FillRect(item->hDC, &rect, background);
+			DeleteObject(background);
+			if (item->itemID != (UINT)-1 && item->itemData < (ULONG_PTR)app->saved_event_count) {
+				SavedEvent *event = &app->saved_events[item->itemData];
+				wchar_t details[128];
+				_snwprintf_s(details, _countof(details), _TRUNCATE,
+					L"%d dates  |  %d min  |  %d expected",
+					event->date_count, event->duration_minutes,
+					event->expected_responses);
+				SetBkMode(item->hDC, TRANSPARENT);
+				SetTextColor(item->hDC, GS_COLOR_TEXT);
+				SelectObject(item->hDC, app->font_bold);
+				text_rect.left += Scale(app, 16);
+				text_rect.right -= Scale(app, 12);
+				text_rect.top += Scale(app, 10);
+				text_rect.bottom = text_rect.top + Scale(app, 25);
+				DrawTextW(item->hDC, event->display_name, -1, &text_rect,
+					DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+				SetTextColor(item->hDC, GS_COLOR_TEXT_SECONDARY);
+				SelectObject(item->hDC, app->font);
+				text_rect.top += Scale(app, 27);
+				text_rect.bottom = rect.bottom - Scale(app, 7);
+				DrawTextW(item->hDC, details, -1, &text_rect,
+					DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+			}
+		divider.top = divider.bottom - 1;
+		divider.left += Scale(app, 12);
+		divider.right -= Scale(app, 12);
+		{
+			HBRUSH line = CreateSolidBrush(GS_COLOR_BORDER);
+			FillRect(item->hDC, &divider, line);
+			DeleteObject(line);
+		}
+		if (item->itemState & ODS_FOCUS) DrawFocusRect(item->hDC, &rect);
+		return TRUE;
+	}
 		if (item->CtlType == ODT_BUTTON) {
 			DrawButton(app, item);
 			return TRUE;
