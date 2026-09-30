@@ -9,7 +9,7 @@ The matching program runs on your Windows computer. A Google Apps Script backend
 1. Enter an event name, meeting duration, and possible dates and time ranges.
 2. GroupSync creates an event-specific Google Form.
 3. Share the form link with participants.
-4. Participants enter their names and mark each 30-minute block **Available**, **Maybe**, or **Unavailable**.
+4. Participants enter their names, choose their time zone, and mark each locally labeled 30-minute block **Available**, **Maybe**, or **Unavailable**.
 5. GroupSync collects the responses and checks continuous time windows long enough for the meeting.
 6. The program displays up to three ranked meeting recommendations.
 
@@ -29,11 +29,11 @@ Availability is evaluated across the entire meeting window, rather than individu
 | `main.c` | Program entry point and event workflow. |
 | `availabilitymatcher.c` | Meeting-time matching and result display. |
 | `availabilitymatcher.h` | Shared data structures, limits, and declarations. |
-| `groupsync_google_forms.ps1` | Connection between the C program and Apps Script. |
+| `groupsync_apps_script.ps1` | Connection between the C program and Apps Script. |
 | `code.gs` | Google Apps Script backend to copy into your own Google account. |
 | `GroupSync_Colors.h` | GUI palette, if included in this repository. |
 
-If your entry-point file is named `main(1).c`, rename it to `main.c` before using the build command below.
+If your entry-point file is named `main(2).c`, rename it to `main.c` before using the build command below.
 
 ## Google API / Apps Script setup
 
@@ -75,9 +75,9 @@ Some Google Workspace organizations restrict public web apps or external form re
 
 ### 4. Connect the desktop program
 
-1. Keep `groupsync_google_forms.ps1` alongside the program and run GroupSync from that folder.
+1. Keep `groupsync_apps_script.ps1` alongside the program and run GroupSync from that folder.
 2. On first run, enter the deployment URL and API key when prompted.
-3. GroupSync tests the connection and saves the settings to `groupsync_google_config.json`.
+3. GroupSync tests the connection and saves the settings to `groupsync_apps_script_config.json`.
 
 If you previously used the desktop OAuth version, back up the old configuration outside the repository and remove the original configuration file before running setup again. The Apps Script helper expects `web_app_url` and `api_key`, rather than OAuth client credentials.
 
@@ -94,11 +94,40 @@ This command builds the terminal entry point supplied with the project. If the r
 
 ## Create an event
 
-Enter the event name, meeting duration, possible dates, and scheduling ranges. Times use 24-hour `HH:MM` notation on 30-minute boundaries. The end time must be later than the start time; `24:00` can be used as an end time.
+Enter the event name, meeting duration, possible dates, and scheduling ranges. Choose the coordinator’s time zone using an IANA identifier such as `America/New_York`. Dates must use `YYYY-MM-DD`. The terminal input uses 24-hour `HH:MM` notation on 30-minute boundaries; participant-facing form labels use 12-hour AM/PM notation. The end time must be later than the start time; `24:00` can be used as an end time.
 
 Share the generated Google Form link, then enter how many responses to wait for. The terminal helper checks every 15 seconds. Once enough submissions arrive, it downloads the requested responses, closes the form to new submissions, and runs the matcher. Press **Ctrl+C** to stop waiting; stopping the desktop program does not itself close the form.
 
 Open the response spreadsheet using the URL printed by the helper. Participants only need the form link.
+
+## Participant time zones and time display
+
+The backend requires these integrations in `code.gs`:
+
+- `createEvent_()` calls `addTimeZoneAvailability_()` after adding the name question and saves its returned metadata.
+- `collect_()` calls `timeZoneResponseToTsv_()` to export the selected time-zone section.
+- Form row labels use `MMM d, yyyy h:mm a`; internal conversion retains `HH:mm`.
+
+The desktop program must include a `timeZone` field in its event JSON:
+
+```json
+{
+  "eventName": "Study Group",
+  "durationMinutes": 60,
+  "timeZone": "America/New_York",
+  "dates": [
+    {"label": "2026-10-03", "startMinutes": 900, "endMinutes": 1020, "blockCount": 4}
+  ]
+}
+```
+
+The required **Your time zone** question routes each participant to local availability grids. A New York block starting at 3:00 PM on October 3, 2026 appears as 12:00 PM for Los Angeles. Labels include local dates so midnight crossings are visible. Selecting a zone routes to a prebuilt section; it does not dynamically rewrite the same grid.
+
+The TSV stays compatible with the C matcher: name followed by A/M/U answers in coordinator date/block order. Each local row represents the same instant as its original coordinator row, so answers must not be shifted a second time.
+
+After changing the backend, update the deployment and create a **new event**. Existing forms keep their old layout. The current time-zone collector requires `zoneGrids` metadata and cannot collect older forms unless a legacy export fallback is retained.
+
+Before sharing, test one coordinator-zone response and one different-zone response. Confirm each participant sees only their selected section, can submit, and produces the expected TSV codes. Live Google Forms behavior still needs verification in your own account.
 
 ## Event cancellation
 
@@ -121,7 +150,7 @@ Updating the existing deployment keeps its URL. The API key also stays the same 
 
 | File | Contents |
 | --- | --- |
-| `groupsync_google_config.json` | Private deployment URL and API key. |
+| `groupsync_apps_script_config.json` | Private deployment URL and API key. |
 | `groupsync_event.json` | Event dates, time ranges, and duration. |
 | `groupsync_form.txt` | Form ID and participant link. |
 | `groupsync_responses.tsv` | Participant names and availability codes. |
@@ -131,6 +160,7 @@ The TSV format contains a participant name followed by `A`, `M`, or `U` values i
 Exclude credentials, generated data, and build output from Git. For the terminal version, add these entries to `.gitignore`:
 
 ```gitignore
+groupsync_apps_script_config.json
 groupsync_google_config.json
 groupsync_event.json
 groupsync_form.txt
@@ -147,7 +177,9 @@ Keep any separately saved GUI event records out of Git as well.
 ## Limitations and privacy
 
 - Each submission counts as one participant. Duplicate submissions are not automatically resolved by name.
-- Time labels use the organizer's intended time zone; the original backend does not automatically convert participant time zones.
+- Participants choose from the supported time-zone list. The form shows the same event blocks in their local zone; exported answers remain in coordinator date/block order.
+- Coordinator times that do not exist or occur twice during daylight saving transitions are rejected by the conversion helper. Avoid event ranges spanning a coordinator clock change with the current wall-clock matcher.
+- Time-zone sections duplicate form questions. Keep the supported-zone list and date count small enough for Google Forms limits.
 - The terminal workflow waits for the requested response count. Partial-response GUI updates require an additional nonblocking fetch workflow.
 - The original terminal files represent one current event and may be overwritten by the next event. A multi-event GUI needs separate persistence.
 - Responses remain in the organizer's Google Form and private Sheet. Avoid sharing the Sheet with participants unless you intend to reveal their responses.
@@ -165,6 +197,10 @@ Keep any separately saved GUI event records out of Git as well.
 | Program keeps waiting | Confirm participants submitted the correct form and the requested response count is accurate. A manually closed form may leave the original helper waiting. |
 | Old OAuth prompts or configuration errors | Use the Apps Script replacement helper and recreate the old local configuration. |
 | Running `doPost` in the editor fails | `doPost` expects an HTTP request; run `setup` in the editor and test the deployed endpoint through the desktop helper. |
+| Event timeZone is required | Ensure the desktop Create request includes an IANA `timeZone` value. |
+| Times still show 24-hour labels | Update the deployed version and create a new event. |
+| Missing zoneGrids or unsupported participant time zone | Use a new time-zone-enabled form, or retain a legacy export fallback for older forms. |
+| Syntax error when pasting code | Copy raw JavaScript; remove Markdown escapes such as backslashes before underscores or multiplication signs. Keep legitimate regex and newline escapes. |
 | Cancel does not work | Check the deployed `Cancel` branch, cancellation function, and desktop/helper support. |
 
 ## Google documentation
